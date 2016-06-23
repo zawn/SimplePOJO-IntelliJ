@@ -2,7 +2,6 @@ package uk.me.jeffsutton.pojogen;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
 import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
@@ -11,32 +10,41 @@ import com.intellij.openapi.util.Condition;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.PsiDirectory;
 import com.intellij.psi.impl.file.PsiDirectoryFactory;
-import com.sun.codemodel.JCodeModel;
-import com.sun.codemodel.writer.FileCodeWriter;
-import com.sun.codemodel.writer.ProgressCodeWriter;
+import org.apache.commons.io.IOUtils;
 import org.fife.ui.rsyntaxtextarea.SyntaxScheme;
 import org.fife.ui.rsyntaxtextarea.TextEditorPane;
 import org.fife.ui.rsyntaxtextarea.Token;
 import org.fife.ui.rtextarea.Gutter;
 import org.fife.ui.rtextarea.RTextScrollPane;
-import org.jsonschema2pojo.*;
+import org.jsonschema2pojo.Annotator;
+import org.jsonschema2pojo.GsonAnnotator;
+import org.jsonschema2pojo.Jackson2Annotator;
 
 import javax.swing.*;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.*;
-import java.awt.event.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.awt.event.KeyEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.Timer;
 
 public class JSONOptions extends JDialog {
     private final Project project;
     private JPanel contentPane;
     private JButton buttonOK;
     private JButton buttonCancel;
-    private JTextField textField1;
+    private JTextField jsonSourceUrlTextField;
     private JTextField textField2;
     private JTextField textField3;
     private JButton browseButton;
@@ -53,8 +61,8 @@ public class JSONOptions extends JDialog {
     private JCheckBox generateDynamicAccessorsCheckBox;
     private TextEditorPane textEditor;
     private RTextScrollPane RTextScrollPane1;
-
-    private VirtualFile fIN;
+    private JButton formatButton;
+    private final Gson printingGson = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().serializeNulls().create();
 
     public JSONOptions(final Project project) {
         this.project = project;
@@ -113,67 +121,121 @@ public class JSONOptions extends JDialog {
                 onCancel();
             }
         }, KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT);
-        browseButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                FileChooserDescriptor Descriptor = new FileChooserDescriptor(true, false, false, false, false, false);
-                Descriptor.setShowFileSystemRoots(true);
-                Descriptor.withFileFilter(new Condition<VirtualFile>() {
-                    @Override
-                    public boolean value(VirtualFile virtualFile) {
-                        return virtualFile != null && virtualFile.getExtension() != null && virtualFile.getExtension().equalsIgnoreCase("json");
-                    }
-                });
-                VirtualFile VirtualFile = FileChooser.chooseFile(Descriptor, project, null);
-                if (VirtualFile != null) {
-                    textField1.setText(VirtualFile.getCanonicalPath());
-                    fIN = VirtualFile;
-                    try {
-                        URL oracle = new URL(VirtualFile.getUrl());
-                        System.out.println("Using URL: " + oracle.toExternalForm());
-                        BufferedReader source = new BufferedReader(
-                                new InputStreamReader(oracle.openStream(), StandardCharsets.UTF_8), 4096);
-                        String file = "";
-                        try {
-                            String str;
-                            while ((str = source.readLine()) != null) {
-                                file += str;
-                            }
-                        } catch (Exception err) {
-                            err.printStackTrace();
-                        }
+        browseButton.setText("选择");
+        jsonSourceUrlTextField.getDocument().addDocumentListener(new DocumentListener() {
+            public void changedUpdate(DocumentEvent e) {
+                warn();
+            }
 
-                        JsonParser parser = new JsonParser();
-                        JsonElement el = parser.parse(file);
+            public void removeUpdate(DocumentEvent e) {
+                warn();
+            }
 
-                        Gson gson = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().serializeNulls().create();
+            public void insertUpdate(DocumentEvent e) {
+                warn();
+            }
 
-                        textEditor.setText(gson.toJson(el));
-                    } catch (Exception err) {
-                        err.printStackTrace();
-                    }
+            public void warn() {
+                String text = jsonSourceUrlTextField.getText();
+                if (text == null || text.trim().equals("")) {
+                    browseButton.setText("选择");
+                } else {
+                    browseButton.setText("获取");
                 }
             }
         });
+
+        browseButton.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                try {
+                    String jsonFromUrl = null;
+                    String urlString = jsonSourceUrlTextField.getText();
+                    if (urlString == null || urlString.trim().equals("")) {
+                        FileChooserDescriptor Descriptor = new FileChooserDescriptor(true, false, false, false, false, false);
+                        Descriptor.setShowFileSystemRoots(true);
+                        Descriptor.withFileFilter(new Condition<VirtualFile>() {
+                            @Override
+                            public boolean value(VirtualFile virtualFile) {
+                                return virtualFile != null && virtualFile.getExtension() != null && (virtualFile.getExtension().equalsIgnoreCase("json") || virtualFile.getExtension().equalsIgnoreCase("txt"));
+                            }
+                        });
+                        VirtualFile virtualFile = FileChooser.chooseFile(Descriptor, project, null);
+                        if (virtualFile != null) {
+                            jsonSourceUrlTextField.setText(virtualFile.getCanonicalPath());
+                            jsonFromUrl = getJsonFromFile(virtualFile);
+                        }
+                    } else {
+                        File file1 = new File(urlString);
+                        URL url;
+                        if (file1.exists()) {
+                            url = file1.toURI().toURL();
+                        } else {
+                            url = new URL(urlString);
+                        }
+                        jsonFromUrl = IOUtils.toString(url);
+                    }
+                    if (jsonFromUrl != null && !"".equals(jsonFromUrl)) {
+                        JsonParser parser = new JsonParser();
+                        String formatJsonText = printingGson.toJson(parser.parse(jsonFromUrl));
+                        textEditor.setText(formatJsonText);
+                    }
+                } catch (MalformedURLException e1) {
+                    e1.printStackTrace();
+                } catch (IOException e1) {
+                    e1.printStackTrace();
+                }
+            }
+        });
+        browseButton1.setText("选择");
         browseButton1.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
                 showFileChoicer();
             }
         });
+
+        formatButton.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                try {
+                    JsonParser parser = new JsonParser();
+                    String text = textEditor.getText();
+                    final String formatJsonText = printingGson.toJson(parser.parse(text));
+                    if (!text.equals(formatJsonText) && formatJsonText != null)
+                        textEditor.setText(formatJsonText);
+                } catch (Exception ex) {
+                    return;
+                }
+            }
+        });
+    }
+
+    private String getJsonFromFile(VirtualFile virtualFile) {
+        try {
+            System.out.println("Using URL: " + new URL(virtualFile.getUrl()).toExternalForm());
+            BufferedReader source = new BufferedReader(
+                    new InputStreamReader(virtualFile.getInputStream(), StandardCharsets.UTF_8), 4096);
+            String jsonString = IOUtils.toString(source);
+            return jsonString;
+        } catch (Exception err) {
+            err.printStackTrace();
+        }
+        return null;
     }
 
     private void onOK() {
-
-        if (textField1.getText() == null || textField1.getText().equalsIgnoreCase("")) {
-            JOptionPane.showMessageDialog(textField1, "You must select a source file", "Error", JOptionPane.ERROR_MESSAGE);
+        if (textEditor.getText() == null || textEditor.getText().equalsIgnoreCase("")) {
+            JOptionPane.showMessageDialog(textEditor, "You must enter or select json data", "Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        if (textField2.getText() == null || textField2.getText().equalsIgnoreCase("")) {
-            JOptionPane.showMessageDialog(textField2, "You must select a destination directory/package", "Error", JOptionPane.ERROR_MESSAGE);
+        try {
+            JsonParser parser = new JsonParser();
+            parser.parse(textEditor.getText());
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(textEditor, "Json data format error", "Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
-
 
         if (textField4.getText() == null || textField4.getText().equalsIgnoreCase("")) {
             JOptionPane.showMessageDialog(textField4, "You must provide a name for the root class", "Error", JOptionPane.ERROR_MESSAGE);
@@ -223,7 +285,10 @@ public class JSONOptions extends JDialog {
                 pkg = path.split("Java/")[1].replaceAll("/", ".");
                 src = path.split("Java/")[0] + "Java";
             } else if (path.contains("src")) {
-                try {pkg = path.split("src/")[1].replaceAll("/", ".");} catch (Exception e) {}
+                try {
+                    pkg = path.split("src/")[1].replaceAll("/", ".");
+                } catch (Exception e) {
+                }
                 src = path.split("src/")[0] + "src";
             }
 

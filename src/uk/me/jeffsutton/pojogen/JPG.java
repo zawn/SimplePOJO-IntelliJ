@@ -41,7 +41,6 @@ class JPG {
             VirtualFile virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(dest);
             if (virtualFile != null) {
                 virtualFile.refresh(false, true);
-
             }
 
         } catch (Exception err) {
