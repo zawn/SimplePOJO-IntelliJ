@@ -26,7 +26,11 @@ dependencies {
 
 // See https://github.com/JetBrains/gradle-intellij-plugin/
 intellij {
-    version '2019.3.4'
+    // Define IntelliJ Platform against which to build the plugin project.
+    version '191.8026.42'  // Same IntelliJ IDEA version (2019.1.4) as target 3.5 Android Studio
+    type 'IC'              // Use IntelliJ IDEA CE because it's the basis of the IntelliJ Platform
+    // Require the Android plugin, Gradle will match the plugin version to intellij.version
+//    plugins 'android'
 }
 patchPluginXml {
     changeNotes """
